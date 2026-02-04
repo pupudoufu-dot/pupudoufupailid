@@ -1,872 +1,1016 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Image as ImageIcon, X, Trash2, Download, RefreshCw, Aperture, Check, Archive, RotateCw, Sun, Sparkles, Palette, Sliders, Lock, Share2, Gift, MessageCircle, Music, MessageSquare, Copy, Link as LinkIcon, CheckCircle2, ArrowRight, LayoutGrid, Zap } from 'lucide-react';
-
-// 相纸配置数据
-const FRAMES = [
-  { id: 'classic', name: '经典白', type: 'solid', color: '#ffffff', textColor: '#57534e', unlocked: true },
-  { id: 'cream', name: '复古杏', type: 'solid', color: '#fef3c7', textColor: '#78350f', unlocked: true }, 
-  { id: 'pink', name: '樱花粉', type: 'solid', color: '#fce7f3', textColor: '#831843', unlocked: false },
-  { id: 'dark', name: '暗夜黑', type: 'solid', color: '#1c1917', textColor: '#e7e5e4', unlocked: false },
-  { id: 'blue', name: '雾霾蓝', type: 'solid', color: '#e0f2fe', textColor: '#0c4a6e', unlocked: false },
-  { id: 'gold', name: '流光金', type: 'gradient', color: ['#fef9c3', '#d97706'], textColor: '#451a03', unlocked: false }, 
-  { id: 'newyear', name: '新年红', type: 'gradient', color: ['#b91c1c', '#dc2626'], textColor: '#fecaca', unlocked: false, special: true }, 
-];
-
-export default function App() {
-  const [stream, setStream] = useState(null);
-  const [error, setError] = useState(null);
-  
-  // 核心数据
-  const [photos, setPhotos] = useState([]); 
-  const [developingPhoto, setDevelopingPhoto] = useState(null); 
-  const [photoCount, setPhotoCount] = useState(0); 
-  
-  // 状态管理
-  const [isDeveloping, setIsDeveloping] = useState(false);
-  const [flash, setFlash] = useState(false);
-  const [view, setView] = useState('camera'); 
-  const [dragActive, setDragActive] = useState(false);
-  
-  // 拖拽
-  const [activeDragId, setActiveDragId] = useState(null);
-  const dragOffset = useRef({ x: 0, y: 0 });
-
-  // 光效与美颜 - 升级版状态
-  const [showLightPanel, setShowLightPanel] = useState(false);
-  
-  // 美颜参数组
-  const [beautySettings, setBeautySettings] = useState({
-    smooth: 0,   // 磨皮 (光影平滑)
-    whiten: 0,   // 美白 (亮度+去黄)
-    sharp: 0     // 五官立体 (对比度)
-  });
-
-  const [fillLightColor, setFillLightColor] = useState('#ffffff');
-  const [fillLightIntensity, setFillLightIntensity] = useState(0);
-
-  // --- 相纸与解锁状态 ---
-  const [currentFrameId, setCurrentFrameId] = useState('classic');
-  const [unlockedFrameIds, setUnlockedFrameIds] = useState(['classic', 'cream']);
-  const [showUnlockModal, setShowUnlockModal] = useState(false);
-  const [targetUnlockFrame, setTargetUnlockFrame] = useState(null); 
-  
-  // 海报与分享
-  const [posterImage, setPosterImage] = useState(null); 
-  const [isSharing, setIsSharing] = useState(false); 
-  const [didLeave, setDidLeave] = useState(false);   
-
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const galleryRef = useRef(null); 
-
-  // 补光色预设
-  const lightPresets = [
-    { name: '自然', color: '#ffffff' }, 
-    { name: '落日', color: '#FF4500' }, 
-    { name: '甜粉', color: '#FF69B4' }, 
-    { name: '极光', color: '#00FFFF' }, 
-    { name: '霓虹', color: '#D500F9' }, 
-  ];
-
-  // 初始化摄像头
-  useEffect(() => {
-    let localStream = null;
-    let isMounted = true; 
-
-    async function setupCamera() {
-      if (view !== 'camera') return;
-      try {
-        setError(null);
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: 'user', 
-            width: { ideal: 4096 }, 
-            height: { ideal: 4096 } 
-          }
-        });
-        if (!isMounted) {
-          mediaStream.getTracks().forEach(track => track.stop());
-          return;
-        }
-        localStream = mediaStream;
-        setStream(mediaStream);
-      } catch (err) {
-        if (!isMounted) return;
-        let msg = "无法访问摄像头，请确保已授权。";
-        setError(msg);
-        console.error("Camera Error:", err);
-      }
-    }
-
-    if (view === 'camera') {
-      setupCamera();
-    } else {
-      setStream(null);
-    }
-
-    return () => {
-      isMounted = false;
-      if (localStream) localStream.getTracks().forEach(track => track.stop());
-      setStream(prev => { if (prev) prev.getTracks().forEach(track => track.stop()); return null; });
-    };
-  }, [view]);
-
-  useEffect(() => {
-    if (stream && videoRef.current) videoRef.current.srcObject = stream;
-  }, [stream]);
-
-  // 切屏检测逻辑
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && isSharing) {
-        setDidLeave(true); 
-      }
-      if (document.visibilityState === 'visible' && isSharing && didLeave) {
-        setTimeout(() => {
-            if (targetUnlockFrame) unlockFrame(targetUnlockFrame.id);
-            setIsSharing(false);
-            setDidLeave(false);
-        }, 800); 
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [isSharing, didLeave, targetUnlockFrame]);
-
-  // 拖拽逻辑
-  useEffect(() => {
-    const handlePointerMove = (e) => {
-      if (!activeDragId) return;
-      e.preventDefault(); 
-      const newX = e.clientX - dragOffset.current.x;
-      const newY = e.clientY - dragOffset.current.y;
-      setPhotos(prev => prev.map(p => p.id === activeDragId ? { ...p, x: newX, y: newY } : p));
-      if (galleryRef.current) {
-         const rect = galleryRef.current.getBoundingClientRect();
-         setDragActive(e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom);
-      }
-    };
-    const handlePointerUp = (e) => {
-      if (!activeDragId) return;
-      const currentId = activeDragId;
-      setActiveDragId(null); 
-      if (galleryRef.current) {
-        const rect = galleryRef.current.getBoundingClientRect();
-         if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
-             setPhotos(prev => prev.map(p => p.id === currentId ? { ...p, archived: true } : p));
-             setDragActive(false);
-         } else {
-             setDragActive(false);
-         }
-      }
-    };
-    if (activeDragId) {
-      window.addEventListener('pointermove', handlePointerMove);
-      window.addEventListener('pointerup', handlePointerUp);
-    }
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-    };
-  }, [activeDragId]); 
-
-  // --- 核心：高级美颜滤镜生成器 (优化算法：去沟壑，不雾化) ---
-  const getBeautyFilterStyle = () => {
-    // 基础值
-    let blur = 0;
-    let brightness = 100;
-    let contrast = 100;
-    let saturate = 100;
-    
-    // 1. 磨皮 (Smooth) -> 
-    // 核心思路：通过提高亮度填充阴影(沟壑)，微降对比度使皮肤色调统一。
-    // 坚决不使用高强度的 Blur，只保留 0.2px 极微量用于消除噪点。
-    if (beautySettings.smooth > 0) {
-        blur = beautySettings.smooth * 0.2; // 极低模糊，保留毛孔
-        brightness += beautySettings.smooth * 6; // 提亮，用光线填平皱纹
-        contrast -= beautySettings.smooth * 4; // 微降对比度，柔化阴影边缘
-    }
-    
-    // 2. 美白 (Whiten) -> 提高亮度 + 降低饱和度(去黄)
-    if (beautySettings.whiten > 0) {
-        brightness += beautySettings.whiten * 8; 
-        saturate -= beautySettings.whiten * 5; // 稍微去黄气
-    }
-    
-    // 3. 立体/五官 (Sharp) -> 提高对比度 + 提高饱和度
-    if (beautySettings.sharp > 0) {
-        contrast += beautySettings.sharp * 12; // 增加对比度让五官更清晰
-        saturate += beautySettings.sharp * 8;  // 增加气色
-    }
-
-    // 基础胶片感微调 (sepia 5% 保持复古但不脏)
-    return `
-      blur(${blur}px) 
-      brightness(${brightness}%) 
-      contrast(${contrast + 5}%) 
-      saturate(${saturate}%) 
-      sepia(5%)
-    `;
-  };
-
-  const handleUnlockTrigger = () => {
-      const nextLockedFrame = FRAMES.find(f => !unlockedFrameIds.includes(f.id));
-      if (nextLockedFrame) {
-          setTargetUnlockFrame(nextLockedFrame);
-          setShowUnlockModal(true);
-      }
-  };
-
-  const generateCollectionPoster = (targetFrame) => {
-      setTargetUnlockFrame(targetFrame); 
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const width = 1080;
-      const height = 1440; 
-      canvas.width = width;
-      canvas.height = height;
-
-      // 背景绘制
-      const gradient = ctx.createLinearGradient(0, 0, width, height);
-      gradient.addColorStop(0, '#991b1b'); 
-      gradient.addColorStop(1, '#450a0a'); 
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-      
-      ctx.save();
-      for(let i=0; i<15000; i++) {
-          ctx.fillStyle = `rgba(255,215,0,${Math.random() * 0.08})`; 
-          ctx.fillRect(Math.random() * width, Math.random() * height, 2, 2);
-      }
-      ctx.restore();
-      
-      // 文字
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#fef3c7'; 
-      ctx.font = 'bold 90px sans-serif'; 
-      ctx.fillText('2026 新春大吉', width/2, 200);
-      ctx.font = '32px sans-serif';
-      ctx.fillStyle = '#fbbf24'; 
-      ctx.fillText('丙午马年 · 限定珍藏', width/2, 270);
-
-      // 绘制照片逻辑
-      let photosToDraw = [...photos].reverse().slice(0, 3);
-      if (photosToDraw.length === 0) { alert("请先拍摄几张照片再生成海报哦！"); return; }
-
-      let loadedCount = 0;
-      const totalPhotos = photosToDraw.length;
-
-      const drawPolaroid = (img, x, y, rotation, date) => {
-          ctx.save();
-          ctx.translate(x, y);
-          ctx.rotate(rotation * Math.PI / 180);
-          ctx.shadowColor = 'rgba(0,0,0,0.6)';
-          ctx.shadowBlur = 40;
-          ctx.shadowOffsetY = 20;
-          const pW = 320;
-          const pH = 400;
-          const grd = ctx.createLinearGradient(-pW/2, -pH/2, pW/2, pH/2);
-          grd.addColorStop(0, '#b91c1c'); grd.addColorStop(1, '#ef4444'); 
-          ctx.fillStyle = grd;
-          ctx.beginPath(); ctx.roundRect(-pW/2, -pH/2, pW, pH, 6); ctx.fill();
-          ctx.shadowColor = 'transparent';
-          ctx.fillStyle = '#262626';
-          const imgSize = 280;
-          ctx.fillRect(-imgSize/2, -pH/2 + 20, imgSize, imgSize);
-          // 这里的滤镜仅作为海报风格，不影响用户已美颜的照片
-          ctx.filter = 'brightness(105%) saturate(110%)'; 
-          ctx.drawImage(img, -imgSize/2, -pH/2 + 20, imgSize, imgSize);
-          ctx.filter = 'none';
-          ctx.fillStyle = '#fef3c7'; 
-          ctx.font = '24px "Caveat", cursive, sans-serif'; 
-          ctx.textAlign = 'center';
-          ctx.fillText(date, 0, pH/2 - 35);
-          ctx.font = '28px serif';
-          ctx.fillText('🧧', pW/2 - 35, pH/2 - 35); 
-          ctx.restore();
-      };
-
-      photosToDraw.forEach((photo, index) => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.src = photo.url;
-          img.onload = () => {
-              let x, y, rot;
-              if (index === 0) { x = width / 2; y = height / 2 + 30; rot = -2; } 
-              else if (index === 1) { x = width / 2 - 140; y = height / 2 - 200; rot = -12; } 
-              else { x = width / 2 + 140; y = height / 2 - 160; rot = 8; }
-              drawPolaroid(img, x, y, rot, photo.date);
-              loadedCount++;
-              if (loadedCount === totalPhotos) {
-                  // 底部
-                  const footerY = height - 160;
-                  ctx.textAlign = 'left';
-                  ctx.fillStyle = '#fff';
-                  ctx.font = 'bold 36px sans-serif';
-                  ctx.fillText('扫码解锁同款新年皮肤', 80, footerY + 70);
-                  const qrSize = 110;
-                  const qrX = width - 80 - qrSize;
-                  const qrY = footerY + 25;
-                  ctx.fillStyle = '#fff';
-                  ctx.fillRect(qrX, qrY, qrSize, qrSize);
-                  ctx.fillStyle = '#7f1d1d'; 
-                  ctx.fillRect(qrX + 10, qrY + 10, qrSize - 20, qrSize - 20);
-                  setPosterImage(canvas.toDataURL('image/png'));
-                  setShowUnlockModal(true);
-              }
-          };
-      });
-  };
-
-  const handleShareToUnlock = (platform) => {
-      setIsSharing(true);
-      setDidLeave(false);
-      let shareText = "RetroCam 拍立得网页版，一键出片！";
-      try {
-          const textArea = document.createElement("textarea");
-          textArea.value = shareText;
-          textArea.style.position = "fixed";
-          textArea.style.left = "-9999px";
-          document.body.appendChild(textArea);
-          textArea.focus();
-          textArea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textArea);
-      } catch (err) {}
-      if (window.innerWidth > 768) {
-          setTimeout(() => {
-              if (isSharing) { unlockFrame(targetUnlockFrame.id); setIsSharing(false); }
-          }, 5000);
-      }
-  };
-
-  const unlockFrame = (frameId) => {
-      if (!unlockedFrameIds.includes(frameId)) {
-          setUnlockedFrameIds(prev => [...prev, frameId]);
-          setCurrentFrameId(frameId); 
-          setShowUnlockModal(false);
-          alert(`🎉 恭喜！已解锁「${FRAMES.find(f=>f.id===frameId).name}」相纸！下张照片自动应用～`);
-      }
-  };
-
-  const takePhoto = () => {
-    if (isDeveloping) return;
-    setFlash(true);
-    setTimeout(() => setFlash(false), 200);
-    const newCount = (photoCount || 0) + 1;
-    setPhotoCount(newCount);
-    if (videoRef.current && canvasRef.current) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const context = canvas.getContext('2d');
-      const size = Math.min(video.videoWidth, video.videoHeight);
-      canvas.width = size;
-      canvas.height = size;
-      const startX = (video.videoWidth - size) / 2;
-      const startY = (video.videoHeight - size) / 2;
-      context.save();
-      context.translate(size, 0);
-      context.scale(-1, 1);
-      // 应用美颜滤镜到最终照片 (所见即所得)
-      context.filter = getBeautyFilterStyle();
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      context.drawImage(video, startX, startY, size, size, 0, 0, size, size);
-      context.filter = 'none';
-      context.restore();
-      const photoData = canvas.toDataURL('image/png', 1.0);
-      setIsDeveloping(true);
-      setDevelopingPhoto({
-        id: Date.now(),
-        url: photoData,
-        date: new Date().toLocaleString(),
-        frameId: currentFrameId 
-      });
-      setTimeout(() => {
-        let initialX, initialY;
-        const photoWidth = 192; 
-        const centerX = window.innerWidth / 2;
-        if (window.innerWidth > 768) {
-           const isRight = Math.random() > 0.5;
-           const safeMargin = 220; 
-           if (isRight) {
-             const minX = centerX + safeMargin;
-             const maxX = window.innerWidth - photoWidth - 40;
-             const range = Math.max(0, maxX - minX);
-             initialX = minX + Math.random() * range;
-           } else {
-             const minX = 40;
-             const maxX = centerX - safeMargin - photoWidth;
-             const range = Math.max(0, maxX - minX);
-             initialX = minX + Math.random() * range;
-           }
-           initialY = 80 + Math.random() * (window.innerHeight - 300 - 80);
-        } else {
-           const minX = 20;
-           const maxX = window.innerWidth - photoWidth - 20;
-           initialX = minX + Math.random() * (maxX - minX);
-           initialY = (window.innerHeight / 2) + 180 + Math.random() * 100;
-        }
-        if (initialX + photoWidth > window.innerWidth) initialX = window.innerWidth - photoWidth - 10;
-        if (initialX < 0) initialX = 10;
-        if (initialY + 240 > window.innerHeight) initialY = window.innerHeight - 250;
-
-        setPhotos(prev => [
-          ...prev, 
-          {
-            id: Date.now(),
-            url: photoData,
-            date: new Date().toLocaleString(),
-            x: initialX,
-            y: initialY,
-            rotation: (Math.random() * 30) - 15,
-            archived: false,
-            frameId: currentFrameId 
-          }
-        ]);
-        setDevelopingPhoto(null);
-        setIsDeveloping(false);
-      }, 1800); 
-    }
-  };
-
-  const handlePointerDown = (e, photo) => {
-    if (e.target.closest('button')) return;
-    e.preventDefault();
-    e.stopPropagation(); 
-    setActiveDragId(photo.id);
-    setPhotos(prev => {
-      const others = prev.filter(p => p.id !== photo.id);
-      const current = prev.find(p => p.id === photo.id);
-      return [...others, current];
-    });
-    dragOffset.current = { x: e.clientX - photo.x, y: e.clientY - photo.y };
-    try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
-  };
-
-  const downloadPhoto = (photo) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const scale = 3; 
-    const padding = 16 * scale; 
-    const topPadding = 16 * scale;
-    const bottomPadding = 80 * scale; 
-    const imgWidth = 256 * scale; 
-    const imgHeight = 256 * scale; 
-    canvas.width = imgWidth + (padding * 2);
-    canvas.height = imgHeight + topPadding + bottomPadding;
-    const frameConfig = FRAMES.find(f => f.id === photo.frameId) || FRAMES[0];
-    if (frameConfig.type === 'gradient') {
-        const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-        frameConfig.color.forEach((c, i) => gradient.addColorStop(i / (frameConfig.color.length - 1), c));
-        ctx.fillStyle = gradient;
-    } else {
-        ctx.fillStyle = frameConfig.color;
-    }
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = photo.url;
-    img.onload = () => {
-        // 下载时保持原图画质，因为 takePhoto 中已经处理过美颜
-        ctx.drawImage(img, padding, topPadding, imgWidth, imgHeight);
-        ctx.fillStyle = frameConfig.textColor; 
-        ctx.font = `${16 * scale}px "Caveat", cursive`; 
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const textX = canvas.width / 2;
-        const textY = topPadding + imgHeight + (bottomPadding / 2);
-        ctx.fillText(photo.date, textX, textY);
-        const link = document.createElement('a');
-        link.href = canvas.toDataURL('image/png');
-        link.download = `retrocam-${photo.id}.png`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    };
-  };
-
-  const deletePhoto = (id) => { setPhotos(prev => prev.filter(p => p.id !== id)); };
-  const archivePhoto = (id) => { setPhotos(prev => prev.map(p => p.id === id ? { ...p, archived: true } : p)); };
-  const rotatePhoto90 = (id) => { setPhotos(prev => prev.map(p => p.id === id ? { ...p, rotation: (p.rotation + 90) } : p)); };
-  const handleWheelRotate = (e, id) => { e.stopPropagation(); const rot = e.deltaY > 0 ? 5 : -5; setPhotos(prev => prev.map(p => p.id === id ? { ...p, rotation: p.rotation + rot } : p)); };
-
-  const unarchivedPhotos = photos.filter(p => !p.archived);
-  const archivedPhotos = photos.filter(p => p.archived);
-
-  const getFrameStyle = (frameId) => {
-      const config = FRAMES.find(f => f.id === frameId) || FRAMES[0];
-      if (config.type === 'gradient') {
-          return { background: `linear-gradient(135deg, ${config.color[0]}, ${config.color[1]})`, color: config.textColor };
-      }
-      return { backgroundColor: config.color, color: config.textColor };
-  };
-
-  return (
-    <div className="min-h-screen bg-stone-200 text-stone-800 font-sans overflow-hidden relative selection:bg-amber-200 touch-none transition-colors duration-500">
-      
-      {/* 屏幕补光层 */}
-      <div 
-        className="fixed inset-0 pointer-events-none z-[0]" 
-        style={{
-          backgroundColor: fillLightColor,
-          opacity: fillLightIntensity, 
-          transition: 'background-color 0.5s, opacity 0.5s'
-        }}
-      />
-      
-      {/* 全屏内发光 (Inset Glow) - 模拟环形灯 */}
-      <div 
-        className="fixed inset-0 pointer-events-none z-[100] transition-all duration-500"
-        style={{
-          boxShadow: fillLightIntensity > 0 
-            ? `inset 0 0 ${fillLightIntensity * 150}px ${fillLightIntensity * 40}px ${fillLightColor}` 
-            : 'none'
-        }}
-      />
-
-      <canvas ref={canvasRef} className="hidden" />
-
-      <header className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-50 pointer-events-none">
-        <h1 className="text-3xl font-bold tracking-tighter text-stone-700 flex items-center gap-2 drop-shadow-sm">
-          <Camera className="w-8 h-8" />
-          RetroCam
-        </h1>
-        <div className="flex gap-3 pointer-events-auto">
-           {view === 'camera' && (
-             <button onClick={() => setShowLightPanel(!showLightPanel)} className={`px-4 py-2 rounded-full shadow-lg transition flex items-center gap-2 border-2 ${showLightPanel ? 'bg-amber-400 border-amber-500 text-stone-900' : 'bg-white border-white text-stone-600 hover:bg-stone-50'}`}>
-               <Sparkles size={18} /> 光效工作室
-             </button>
-           )}
-           {view === 'gallery' && (
-             <button onClick={() => setView('camera')} className="bg-stone-800 text-white px-4 py-2 rounded-full shadow-lg hover:bg-stone-700 transition flex items-center gap-2"><RefreshCw size={18} /> 返回相机</button>
-           )}
-        </div>
-      </header>
-
-      {/* 光效面板 - 升级版 */}
-      {showLightPanel && view === 'camera' && (
-        <div className="absolute top-24 left-6 z-50 bg-white/90 backdrop-blur-md p-5 rounded-2xl shadow-xl border border-white/50 w-72 animate-in fade-in slide-in-from-left-5">
-           <div className="space-y-6">
-              
-              {/* iPhone 模式美颜三件套 */}
-              <div className="space-y-4">
-                  <h4 className="text-xs font-bold text-stone-400 uppercase tracking-wider">iPhone 质感美颜</h4>
-                  
-                  {/* 1. 磨皮 (去沟壑) */}
-                  <div>
-                    <div className="flex justify-between mb-1">
-                        <label className="text-xs font-bold text-stone-600">改善肤质 (去纹理)</label>
-                        <span className="text-[10px] text-stone-400">{Math.round(beautySettings.smooth * 10)}</span>
-                    </div>
-                    <input type="range" min="0" max="3" step="0.5" value={beautySettings.smooth} onChange={(e) => setBeautySettings({...beautySettings, smooth: Number(e.target.value)})} className="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500" />
-                  </div>
-
-                  {/* 2. 美白/提亮 */}
-                  <div>
-                    <div className="flex justify-between mb-1">
-                        <label className="text-xs font-bold text-stone-600">美白提亮 (去黄)</label>
-                        <span className="text-[10px] text-stone-400">{Math.round(beautySettings.whiten * 10)}</span>
-                    </div>
-                    <input type="range" min="0" max="2" step="0.2" value={beautySettings.whiten} onChange={(e) => setBeautySettings({...beautySettings, whiten: Number(e.target.value)})} className="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500" />
-                  </div>
-
-                  {/* 3. 五官立体 (清晰度) */}
-                  <div>
-                    <div className="flex justify-between mb-1">
-                        <label className="text-xs font-bold text-stone-600">精致五官 (立体)</label>
-                        <span className="text-[10px] text-stone-400">{Math.round(beautySettings.sharp * 10)}</span>
-                    </div>
-                    <input type="range" min="0" max="2" step="0.2" value={beautySettings.sharp} onChange={(e) => setBeautySettings({...beautySettings, sharp: Number(e.target.value)})} className="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500" />
-                  </div>
-              </div>
-
-              <div className="h-px bg-stone-200"></div>
-
-              {/* 补光控制 */}
-              <div>
-                <h4 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">屏幕补光灯</h4>
-                <div className="flex justify-between items-center mb-2">
-                  <label className="text-xs font-bold text-stone-600 flex items-center gap-1"><Sun size={14} className="text-amber-500"/> 补光强度</label>
-                  <span className="text-[10px] text-stone-400">{Math.round(fillLightIntensity * 100)}%</span>
-                </div>
-                <input type="range" min="0" max="1" step="0.05" value={fillLightIntensity} onChange={(e) => setFillLightIntensity(Number(e.target.value))} className="w-full h-2 bg-stone-200 rounded-lg accent-amber-500" />
-                
-                <div className="mt-4 flex gap-2 flex-wrap">
-                    {lightPresets.map((preset) => (
-                      <button key={preset.name} onClick={() => { setFillLightColor(preset.color); if (fillLightIntensity === 0) setFillLightIntensity(0.5); }} className={`w-8 h-8 rounded-full border-2 shadow-sm transition-transform hover:scale-110 relative ${fillLightColor === preset.color && fillLightIntensity > 0 ? 'border-stone-600 scale-110' : 'border-transparent'}`} style={{ backgroundColor: preset.color }} title={preset.name}>
-                        {fillLightColor === preset.color && fillLightIntensity > 0 && (<div className="absolute inset-0 flex items-center justify-center"><Check size={12} className={preset.color === '#ffffff' ? "text-stone-800" : "text-white"} strokeWidth={3}/></div>)}
-                      </button>
-                    ))}
-                 </div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* --- 解锁弹窗 (Slide-up Modal) --- */}
-      <div 
-        className={`fixed bottom-0 left-0 right-0 z-[100] transform transition-transform duration-500 cubic-bezier(0.16, 1, 0.3, 1) flex justify-center pointer-events-none
-          ${showUnlockModal ? 'translate-y-0' : 'translate-y-[120%]'}
-        `}
-      >
-        {targetUnlockFrame && (
-          <div className="bg-white/95 backdrop-blur-xl w-full max-w-md mx-4 mb-6 rounded-3xl shadow-2xl border border-white/50 p-6 pointer-events-auto relative overflow-hidden">
-             {/* ... (Existing unlock modal content) ... */}
-             <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-yellow-100/50 to-transparent pointer-events-none"></div>
-             
-             {isSharing ? (
-                <div className="relative z-10 flex flex-col items-center text-center py-8">
-                    <div className="w-16 h-16 border-4 border-stone-100 border-t-amber-500 rounded-full animate-spin mb-6"></div>
-                    <h3 className="text-xl font-bold text-stone-800 flex items-center gap-2">
-                        <CheckCircle2 className="text-green-500" size={24} /> 
-                        文案已复制
-                    </h3>
-                    <div className="bg-stone-50 p-4 rounded-xl mt-4 w-full text-left border border-stone-200">
-                        <p className="text-stone-500 text-sm mb-2 flex items-center gap-2">
-                            <span className="bg-stone-200 text-stone-600 px-2 py-0.5 rounded text-xs font-bold">Step 1</span>
-                            打开微信/QQ/抖音
-                        </p>
-                        <p className="text-stone-500 text-sm mb-2 flex items-center gap-2">
-                            <span className="bg-stone-200 text-stone-600 px-2 py-0.5 rounded text-xs font-bold">Step 2</span>
-                            粘贴并发送给好友
-                        </p>
-                        <p className="text-stone-800 text-sm font-bold flex items-center gap-2">
-                            <span className="bg-amber-100 text-amber-600 px-2 py-0.5 rounded text-xs font-bold">Step 3</span>
-                            返回此页面，自动解锁！
-                        </p>
-                    </div>
-                    <button onClick={() => setIsSharing(false)} className="mt-6 text-stone-400 text-sm underline">重新选择分享方式</button>
-                </div>
-             ) : (
-                <div className="relative z-10 flex flex-col items-center text-center">
-                    <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mb-4 text-yellow-600 animate-bounce"><Gift size={32} /></div>
-                    <h3 className="text-xl font-bold text-stone-800 mb-2">
-                        {targetUnlockFrame.id === 'newyear' ? '生成我的年度影集' : `解锁「${targetUnlockFrame.name}」相纸`}
-                    </h3>
-                    <p className="text-sm text-stone-500 mb-6 px-4">
-                        {targetUnlockFrame.id === 'newyear' ? '分享这份独特的复古记忆，解锁全部限定相纸！' : '只需分享给 1 位好友，即可永久免费解锁该相纸！'}
-                    </p>
-                    
-                    <div className="mb-6 scale-75 origin-center shadow-lg rounded-sm overflow-hidden">
-                        {posterImage && targetUnlockFrame.id === 'newyear' ? (
-                            <div className="w-64 h-auto border-4 border-white max-h-[300px] overflow-hidden">
-                                <img src={posterImage} className="w-full h-full object-cover" alt="Poster" />
-                            </div>
-                        ) : (
-                            <div className="w-48 h-60 p-3 pb-8 flex flex-col items-center justify-center" style={targetUnlockFrame.type === 'gradient' ? { background: `linear-gradient(135deg, ${targetUnlockFrame.color[0]}, ${targetUnlockFrame.color[1]})` } : { backgroundColor: targetUnlockFrame.color }}>
-                                <div className="w-full h-full bg-stone-200 flex items-center justify-center opacity-50"><ImageIcon className="text-stone-400" /></div>
-                            </div>
-                        )}
-                    </div>
-                    <div className="grid grid-cols-4 gap-4 w-full mb-4">
-                        <button onClick={() => handleShareToUnlock('wechat')} className="flex flex-col items-center gap-2 group"><div className="w-12 h-12 bg-green-100 text-green-600 rounded-full flex items-center justify-center group-hover:bg-green-500 group-hover:text-white transition-colors shadow-sm"><MessageCircle size={20} /></div><span className="text-xs text-stone-500">微信</span></button>
-                        <button onClick={() => handleShareToUnlock('qq')} className="flex flex-col items-center gap-2 group"><div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-colors shadow-sm"><MessageSquare size={20} /></div><span className="text-xs text-stone-500">QQ</span></button>
-                        <button onClick={() => handleShareToUnlock('douyin')} className="flex flex-col items-center gap-2 group"><div className="w-12 h-12 bg-stone-100 text-stone-800 rounded-full flex items-center justify-center group-hover:bg-stone-800 group-hover:text-white transition-colors shadow-sm"><Music size={20} /></div><span className="text-xs text-stone-500">抖音</span></button>
-                        <button onClick={() => handleShareToUnlock('link')} className="flex flex-col items-center gap-2 group"><div className="w-12 h-12 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center group-hover:bg-orange-500 group-hover:text-white transition-colors shadow-sm"><LinkIcon size={20} /></div><span className="text-xs text-stone-500">复制</span></button>
-                    </div>
-                    <button onClick={() => setShowUnlockModal(false)} className="text-stone-400 text-sm hover:text-stone-600 underline">暂不解锁，先保存照片</button>
-                </div>
-             )}
-          </div>
-        )}
-      </div>
-
-      {/* --- 底部相纸 Dock 栏 --- */}
-      {view === 'camera' && (
-        <div className="fixed bottom-0 left-0 right-0 z-[60] flex justify-center pb-6 pt-12 pointer-events-none bg-gradient-to-t from-stone-200/90 via-stone-200/50 to-transparent">
-           <div className="pointer-events-auto bg-white/70 backdrop-blur-md px-2 py-2 rounded-2xl shadow-lg border border-white/50 flex gap-2 overflow-x-auto max-w-[90vw] custom-scrollbar snap-x items-center">
-              {FRAMES.map((frame) => {
-                const isUnlocked = unlockedFrameIds.includes(frame.id);
-                const isSelected = currentFrameId === frame.id;
-                return (
-                  <button key={frame.id} onClick={() => { if (isUnlocked) { setCurrentFrameId(frame.id); } else { if (frame.id === 'newyear') { generateCollectionPoster(frame); } else { setTargetUnlockFrame(frame); setPosterImage(null); setShowUnlockModal(true); } } }} className={`relative flex-shrink-0 w-12 h-16 rounded-md border-2 transition-all duration-300 snap-center ${isSelected ? 'border-stone-800 scale-110 shadow-md z-10' : 'border-transparent scale-95 opacity-80 hover:scale-100 hover:opacity-100'}`} style={{ background: frame.type === 'gradient' ? `linear-gradient(135deg, ${frame.color[0]}, ${frame.color[1]})` : frame.color }}>
-                    {!isUnlocked && (<div className="absolute inset-0 bg-black/20 flex items-center justify-center rounded-sm"><Lock size={16} className="text-white drop-shadow-md" /></div>)}
-                    {isSelected && isUnlocked && (<div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 bg-stone-800 rounded-full"></div>)}
-                  </button>
-                );
-              })}
-           </div>
-        </div>
-      )}
-
-      {/* --- 右下角：解锁新年皮肤悬浮入口 --- */}
-      {view === 'camera' && photos.length > 0 && !unlockedFrameIds.includes('newyear') && (
-          <button onClick={() => generateCollectionPoster(FRAMES.find(f => f.id === 'newyear'))} className="fixed bottom-28 right-6 z-[70] bg-gradient-to-r from-red-500 to-amber-500 text-white p-3 rounded-full shadow-lg shadow-red-500/30 animate-bounce hover:scale-110 transition group" title="解锁新年皮肤">
-             <Gift size={24} />
-             <span className="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-white text-red-500 text-xs font-bold px-2 py-1 rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition shadow-sm">生成年度海报</span>
-          </button>
-      )}
-
-      {/* 主视图 */}
-      {view === 'camera' && (
-        <main className="flex flex-col items-center justify-center h-screen relative z-10 pb-20">
-          
-          <div className={`absolute inset-0 bg-white pointer-events-none z-[60] transition-opacity duration-300 ${flash ? 'opacity-100' : 'opacity-0'}`}></div>
-
-          <div className="relative z-20 scale-90 md:scale-100 transition-transform">
-            
-            <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-48 transition-all duration-[1500ms] ease-out z-10 ${isDeveloping ? '-translate-y-[85%]' : 'translate-y-10 opacity-0'}`}>
-               <div className="p-3 pb-8 shadow-xl rotate-0 border border-black/5" style={getFrameStyle(currentFrameId)}>
-                  <div className="w-full h-56 bg-stone-900 overflow-hidden relative">
-                    <div className="absolute inset-0 w-full h-full bg-stone-200 z-20 mix-blend-hard-light animate-develop" style={{ animation: isDeveloping ? 'developPhoto 3s forwards' : 'none' }} />
-                    {canvasRef.current && ( <img src={canvasRef.current.toDataURL()} className="w-full h-full object-cover filter contrast-105 sepia-[0.1]" alt="developing"/> )}
-                  </div>
-               </div>
-            </div>
-
-            <div className="w-80 bg-[#f4f1ea] rounded-[2.5rem] p-6 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.3),inset_0_-4px_10px_rgba(0,0,0,0.1)] border border-[#e6e2d8] relative z-20">
-              
-              {/* 机身漫反射 */}
-              <div className="absolute inset-0 rounded-[2.5rem] pointer-events-none transition-colors duration-500" style={{ backgroundColor: fillLightColor, opacity: fillLightIntensity * 0.4, mixBlendMode: 'multiply' }}></div>
-
-              <div className="absolute top-1/2 left-0 right-0 h-40 -translate-y-1/2 flex flex-col justify-center opacity-90 pointer-events-none"><div className="h-full w-full absolute top-0 bg-gradient-to-b from-transparent via-transparent to-[rgba(0,0,0,0.05)]"></div></div>
-              <div className="absolute bottom-12 left-1/2 -translate-x-1/2 w-full flex justify-center pointer-events-none">
-                  {['#ff3b30', '#ff9500', '#ffcc00', '#4cd964', '#007aff', '#5856d6'].map((c, i) => (<div key={i} className="h-32 w-4" style={{backgroundColor: c}}></div>))}
-              </div>
-
-              {/* 镜头组件 */}
-              <div className="relative bg-stone-900 w-64 h-64 mx-auto rounded-full border-8 border-stone-300 shadow-inner overflow-hidden ring-4 ring-black/10">
-                {/* 镜头环形灯 (Ring Light) */}
-                <div className="absolute inset-0 rounded-full pointer-events-none transition-all duration-300" style={{ boxShadow: fillLightIntensity > 0 ? `inset 0 0 ${fillLightIntensity * 30}px ${fillLightColor}, 0 0 ${fillLightIntensity * 20}px ${fillLightColor}` : 'none', border: fillLightIntensity > 0 ? `2px solid ${fillLightColor}` : 'none', opacity: fillLightIntensity > 0 ? 0.8 : 0 }}></div>
-                <div className="absolute top-4 left-4 w-20 h-10 bg-white/10 rounded-full blur-xl z-30 pointer-events-none"></div>
-                {stream ? (
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover transform scale-x-[-1]" style={{ filter: getBeautyFilterStyle() }} />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-stone-500 text-sm p-4 text-center">{error || "正在连接镜头..."}</div>
-                )}
-              </div>
-
-              <div className="flex justify-between items-center mt-8 px-4">
-                 <div className="w-12 h-8 bg-stone-800 rounded-sm relative overflow-hidden border border-stone-600"><div className="absolute inset-0 bg-gradient-to-tr from-transparent to-white/30"></div></div>
-                 <button onClick={takePhoto} disabled={isDeveloping} className={`w-16 h-16 rounded-full border-4 border-stone-300 shadow-lg transition-all active:scale-95 flex items-center justify-center relative ${isDeveloping ? 'bg-red-200 cursor-not-allowed' : 'bg-red-600 hover:bg-red-500 cursor-pointer'}`}>
-                   <div className="w-12 h-12 rounded-full border border-white/20"></div>
-                 </button>
-                 <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]"></div>
-              </div>
-              <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-56 h-3 bg-stone-800 rounded-full shadow-inner z-30"></div>
-            </div>
-          </div>
-
-          {/* 散落照片 */}
-          {unarchivedPhotos.map((photo) => (
-            <div 
-              key={photo.id}
-              onPointerDown={(e) => handlePointerDown(e, photo)}
-              onDoubleClick={(e) => { e.stopPropagation(); rotatePhoto90(photo.id); }}
-              onWheel={(e) => handleWheelRotate(e, photo.id)}
-              className={`fixed z-50 cursor-grab w-48 touch-none select-none`}
-              style={{ left: photo.x, top: photo.y, transition: activeDragId === photo.id ? 'none' : 'left 0.3s ease-out, top 0.3s ease-out', zIndex: activeDragId === photo.id ? 100 : 50 }}
-            >
-              <div className={`transition-transform duration-300 ease-out relative ${activeDragId === photo.id ? 'scale-110 shadow-2xl rotate-0' : 'hover:scale-105 shadow-xl'}`}
-              style={{ transform: activeDragId === photo.id ? `rotate(${photo.rotation}deg) scale(1.1)` : `rotate(${photo.rotation}deg)` }}>
-                <button onClick={(e) => { e.stopPropagation(); archivePhoto(photo.id); }} className="absolute -top-3 -left-3 bg-white text-stone-400 border border-stone-200 p-2 rounded-full shadow-md hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition z-50 pointer-events-auto flex items-center justify-center group" title="归档"><Archive size={18} /></button>
-                <button onClick={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-3 -right-3 bg-white text-stone-400 border border-stone-200 p-2 rounded-full shadow-md hover:bg-red-500 hover:text-white hover:border-red-500 transition z-50 pointer-events-auto flex items-center justify-center group" title="丢弃"><X size={18} /></button>
-                
-                <div className="p-3 pb-8 shadow-sm border border-black/5" style={getFrameStyle(photo.frameId)}>
-                  <div className="w-full h-56 bg-stone-900 overflow-hidden relative pointer-events-none">
-                     <img src={photo.url} className="w-full h-full object-cover filter contrast-105 sepia-[0.1]" alt="result" />
-                     <div className="absolute inset-0 opacity-5 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
-                  </div>
-                  <div className="mt-4 font-handwriting text-center text-sm pointer-events-none" style={{ color: getFrameStyle(photo.frameId).color }}>
-                     {photo.date}
-                  </div>
-                </div>
-                
-                <button onClick={(e) => { e.stopPropagation(); downloadPhoto(photo); }} className="absolute -bottom-3 -right-3 bg-white text-stone-400 border border-stone-200 p-2 rounded-full shadow-md hover:bg-blue-500 hover:text-white hover:border-blue-500 transition z-50 pointer-events-auto flex items-center justify-center group" title="下载"><Download size={18} /></button>
-              </div>
-            </div>
-          ))}
-          
-          <div 
-            ref={galleryRef}
-            onClick={() => setView('gallery')}
-            className={`absolute bottom-28 right-8 transition-all duration-300 transform ${dragActive ? 'scale-125 rotate-6' : 'hover:scale-110'} cursor-pointer z-40 group`}
-          >
-             <div className="relative pointer-events-none">
-                <div className="absolute inset-0 bg-stone-100 rotate-6 rounded-lg shadow-md translate-x-2 translate-y-2 border border-stone-300"></div>
-                <div className="absolute inset-0 bg-stone-100 -rotate-3 rounded-lg shadow-md -translate-x-1 translate-y-1 border border-stone-300"></div>
-                <div className={`relative w-28 h-28 bg-stone-100 rounded-lg shadow-2xl flex flex-col items-center justify-center border-4 ${dragActive ? 'border-amber-400 bg-amber-50' : 'border-stone-300'} transition-colors overflow-hidden`}>
-                  {archivedPhotos.length > 0 ? (
-                    <img src={archivedPhotos[archivedPhotos.length-1].url} className="absolute inset-0 w-full h-full object-cover opacity-80" alt="cover" />
-                  ) : (
-                    <ImageIcon className="text-stone-300 w-10 h-10 mb-1" />
-                  )}
-                  <div className="absolute bottom-0 w-full bg-white/90 backdrop-blur-sm text-center py-1 text-xs font-bold text-stone-600 border-t border-stone-200">
-                     {archivedPhotos.length} 张照片
-                  </div>
-                </div>
-                <div className="absolute -top-10 left-1/2 -translate-x-1/2 w-max bg-stone-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">查看相册</div>
-             </div>
-          </div>
-        </main>
-      )}
-
-      {/* Gallery View */}
-      {view === 'gallery' && (
-        <main className="min-h-screen p-8 pt-24 bg-stone-800 overflow-y-auto custom-scrollbar relative z-10">
-           <div className="max-w-6xl mx-auto">
-              
-              <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-white text-xl font-bold flex items-center gap-2">
-                      <ImageIcon className="text-amber-400"/> 我的影集 ({archivedPhotos.length})
-                  </h2>
-                  {archivedPhotos.length > 0 && (
-                      <button onClick={() => generateCollectionPoster(FRAMES.find(f => f.id === 'newyear'))} className="bg-gradient-to-r from-amber-400 to-orange-500 text-white px-4 py-2 rounded-full shadow-lg hover:shadow-orange-500/20 transition flex items-center gap-2 font-bold text-sm">
-                          <LayoutGrid size={16} /> 生成影集海报
-                      </button>
-                  )}
-              </div>
-
-              {archivedPhotos.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-96 text-stone-400">
-                   <Aperture className="w-16 h-16 mb-4 opacity-50" />
-                   <p className="text-xl">相册是空的，快去拍几张！</p>
-                   <button onClick={() => setView('camera')} className="mt-6 text-amber-400 hover:text-amber-300 underline">返回拍摄</button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">
-                  {archivedPhotos.map((photo, index) => (
-                    <div key={photo.id} className="group relative">
-                       <div className="p-4 pb-12 shadow-lg transform transition-all duration-300 hover:scale-105 hover:z-10 hover:shadow-2xl rotate-0 hover:rotate-0"
-                            style={{ 
-                                ...getFrameStyle(photo.frameId),
-                                transform: `rotate(${index % 2 === 0 ? '-2deg' : '2deg'})`
-                            }}>
-                          <div className="w-full aspect-square bg-stone-100 overflow-hidden relative group-hover:cursor-pointer">
-                             <img src={photo.url} className="w-full h-full object-cover filter contrast-105 sepia-[0.1]" alt="memory" />
-                             <div className="absolute inset-0 opacity-5 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
-                          </div>
-                          <div className="mt-4 flex justify-between items-end border-b border-black/10 pb-2">
-                             <span className="font-handwriting text-sm" style={{ color: getFrameStyle(photo.frameId).color }}>{photo.date}</span>
-                          </div>
-                       </div>
-                       <div className="absolute -top-2 -right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => downloadPhoto(photo)} className="p-2 bg-blue-500 text-white rounded-full shadow hover:bg-blue-600" title="下载"><Download size={16} /></button>
-                          <button onClick={() => deletePhoto(photo.id)} className="p-2 bg-red-500 text-white rounded-full shadow hover:bg-red-600" title="删除"><Trash2 size={16} /></button>
-                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-           </div>
-        </main>
-      )}
-
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500&display=swap');
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RetroCam - 复古拍立得</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Caveat (手写体) -->
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
         .font-handwriting { font-family: 'Caveat', cursive; }
+        /* 隐藏滚动条 */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
         @keyframes developPhoto {
-          0% { filter: brightness(5) blur(10px) grayscale(100%); opacity: 0.2; }
-          50% { filter: brightness(2) blur(5px) grayscale(50%); opacity: 0.8; }
-          100% { filter: brightness(1) blur(0px) grayscale(0%); opacity: 1; }
+            0% { filter: brightness(5) blur(10px) grayscale(100%); opacity: 0.2; }
+            50% { filter: brightness(2) blur(5px) grayscale(50%); opacity: 0.8; }
+            100% { filter: brightness(1) blur(0px) grayscale(0%); opacity: 1; }
         }
-        .animate-develop { }
-        .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
-      `}</style>
+        .animate-develop { animation: developPhoto 3s forwards; }
+        
+        .animate-float { animation: float 6s ease-in-out infinite; }
+        @keyframes float {
+            0% { transform: translateY(0px) rotate(-2deg); }
+            50% { transform: translateY(-10px) rotate(-2deg); }
+            100% { transform: translateY(0px) rotate(-2deg); }
+        }
+    </style>
+</head>
+<body class="bg-stone-200 text-stone-800 font-sans overflow-hidden relative selection:bg-amber-200 touch-none transition-colors duration-500">
+
+    <!-- 屏幕补光层 -->
+    <div id="fillLightLayer" class="fixed inset-0 pointer-events-none z-0 transition-all duration-500" style="background-color: #ffffff; opacity: 0;"></div>
+    <div id="fillLightGlow" class="fixed inset-0 pointer-events-none z-[100] transition-all duration-500" style="box-shadow: none;"></div>
+
+    <!-- 隐藏的 Canvas -->
+    <canvas id="photoCanvas" class="hidden"></canvas>
+    <canvas id="posterCanvas" class="hidden"></canvas>
+
+    <!-- 顶部栏 -->
+    <header class="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-50 pointer-events-none">
+        <h1 class="text-3xl font-bold tracking-tighter text-stone-700 flex items-center gap-2 drop-shadow-sm">
+            <i data-lucide="camera" class="w-8 h-8"></i> RetroCam
+        </h1>
+        <div class="flex gap-3 pointer-events-auto" id="headerButtons">
+            <button id="btnLightStudio" class="px-4 py-2 rounded-full shadow-lg transition flex items-center gap-2 border-2 bg-white border-white text-stone-600 hover:bg-stone-50">
+                <i data-lucide="sparkles" class="w-4 h-4"></i> <span class="hidden sm:inline">光效工作室</span>
+            </button>
+            <button id="btnBackToCamera" class="hidden bg-stone-800 text-white px-4 py-2 rounded-full shadow-lg hover:bg-stone-700 transition flex items-center gap-2">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i> 返回相机
+            </button>
+        </div>
+    </header>
+
+    <!-- 光效工作室面板 -->
+    <div id="lightPanel" class="hidden absolute top-24 left-6 z-50 bg-white/90 backdrop-blur-md p-5 rounded-2xl shadow-xl border border-white/50 w-72 animate-in fade-in slide-in-from-left-5">
+        <div class="space-y-6">
+            <!-- 美颜参数 -->
+            <div class="space-y-4">
+                <h4 class="text-xs font-bold text-stone-400 uppercase tracking-wider">iPhone 质感美颜</h4>
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-stone-600">改善肤质</label>
+                        <span class="text-[10px] text-stone-400" id="valSmooth">0</span>
+                    </div>
+                    <input type="range" id="inputSmooth" min="0" max="3" step="0.5" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                </div>
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-stone-600">美白提亮</label>
+                        <span class="text-[10px] text-stone-400" id="valWhiten">0</span>
+                    </div>
+                    <input type="range" id="inputWhiten" min="0" max="2" step="0.2" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                </div>
+                 <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-stone-600">五官立体</label>
+                        <span class="text-[10px] text-stone-400" id="valSharp">0</span>
+                    </div>
+                    <input type="range" id="inputSharp" min="0" max="2" step="0.2" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                </div>
+            </div>
+            <div class="h-px bg-stone-200"></div>
+            <!-- 补光控制 -->
+            <div>
+                <h4 class="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">屏幕补光灯</h4>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-xs font-bold text-stone-600 flex items-center gap-1"><i data-lucide="sun" class="w-3 h-3 text-amber-500"></i> 强度</label>
+                    <span class="text-[10px] text-stone-400" id="valIntensity">0%</span>
+                </div>
+                <input type="range" id="inputIntensity" min="0" max="1" step="0.05" value="0" class="w-full h-2 bg-stone-200 rounded-lg accent-amber-500 cursor-pointer">
+                <div class="mt-4 flex gap-2 flex-wrap" id="colorPresets">
+                    <!-- 动态生成颜色按钮 -->
+                </div>
+            </div>
+        </div>
     </div>
-  );
-}
+
+    <!-- 主视图容器 -->
+    <main id="mainView" class="flex flex-col items-center justify-center h-screen relative z-10 pb-20 transition-opacity duration-300">
+        
+        <!-- 闪光灯效果 -->
+        <div id="flashOverlay" class="absolute inset-0 bg-white pointer-events-none z-[60] opacity-0 transition-opacity duration-300"></div>
+
+        <!-- 相机主体 -->
+        <div class="relative z-20 scale-90 md:scale-100 transition-transform">
+            
+            <!-- 显影出口动画层 -->
+            <div id="developingPhotoContainer" class="absolute top-0 left-1/2 -translate-x-1/2 w-48 transition-all duration-[1500ms] ease-out z-10 translate-y-10 opacity-0">
+                <div class="p-3 pb-8 shadow-xl rotate-0 border border-black/5 bg-white" id="devPhotoFrame">
+                    <div class="w-full h-56 bg-stone-900 overflow-hidden relative">
+                        <div class="absolute inset-0 w-full h-full bg-stone-200 z-20 mix-blend-hard-light" id="devPhotoAnim"></div>
+                        <img id="devPhotoImg" src="" class="w-full h-full object-cover filter contrast-105 sepia-[0.1]">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 机身外壳 -->
+            <div class="w-80 bg-[#f4f1ea] rounded-[2.5rem] p-6 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.3),inset_0_-4px_10px_rgba(0,0,0,0.1)] border border-[#e6e2d8] relative z-20 overflow-hidden">
+                 <!-- 机身漫反射层 -->
+                <div id="bodyReflection" class="absolute inset-0 rounded-[2.5rem] pointer-events-none transition-colors duration-500 opacity-0 mix-blend-multiply bg-white"></div>
+
+                <!-- 彩虹条 -->
+                <div class="absolute bottom-12 left-1/2 -translate-x-1/2 w-full flex justify-center pointer-events-none z-10">
+                    <div class="h-32 w-4 bg-[#ff3b30]"></div>
+                    <div class="h-32 w-4 bg-[#ff9500]"></div>
+                    <div class="h-32 w-4 bg-[#ffcc00]"></div>
+                    <div class="h-32 w-4 bg-[#4cd964]"></div>
+                    <div class="h-32 w-4 bg-[#007aff]"></div>
+                    <div class="h-32 w-4 bg-[#5856d6]"></div>
+                </div>
+
+                <!-- 取景器/镜头 -->
+                <div class="relative bg-stone-900 w-64 h-64 mx-auto rounded-full border-8 border-stone-300 shadow-inner overflow-hidden ring-4 ring-black/10 z-20">
+                     <!-- 环形补光灯模拟 -->
+                     <div id="ringLight" class="absolute inset-0 rounded-full pointer-events-none transition-all duration-300 opacity-0" style="border: 2px solid white;"></div>
+                     
+                     <div class="absolute top-4 left-4 w-20 h-10 bg-white/10 rounded-full blur-xl z-30 pointer-events-none"></div>
+                     <video id="videoElement" autoplay playsinline muted class="w-full h-full object-cover transform scale-x-[-1]"></video>
+                     <div id="cameraError" class="absolute inset-0 flex items-center justify-center text-stone-500 text-sm p-4 text-center hidden">正在连接镜头...</div>
+                </div>
+
+                <!-- 快门区域 -->
+                <div class="flex justify-between items-center mt-8 px-4 relative z-20">
+                    <div class="w-12 h-8 bg-stone-800 rounded-sm relative overflow-hidden border border-stone-600"><div class="absolute inset-0 bg-gradient-to-tr from-transparent to-white/30"></div></div>
+                    
+                    <button id="shutterBtn" class="w-16 h-16 rounded-full border-4 border-stone-300 shadow-lg transition-all active:scale-95 flex items-center justify-center bg-red-600 hover:bg-red-500 cursor-pointer">
+                        <div class="w-12 h-12 rounded-full border border-white/20"></div>
+                    </button>
+
+                    <div class="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]"></div>
+                </div>
+                
+                <!-- 出纸口 -->
+                <div class="absolute -top-1 left-1/2 -translate-x-1/2 w-56 h-3 bg-stone-800 rounded-full shadow-inner z-30"></div>
+            </div>
+        </div>
+
+        <!-- 散落照片容器 -->
+        <div id="loosePhotosContainer"></div>
+
+        <!-- 解锁新年皮肤悬浮按钮 -->
+        <button id="unlockNewYearBtn" class="hidden fixed bottom-32 right-6 z-[70] bg-gradient-to-r from-red-500 to-amber-500 text-white p-3 rounded-full shadow-lg shadow-red-500/30 animate-bounce hover:scale-110 transition group" title="解锁新年皮肤">
+            <i data-lucide="gift" class="w-6 h-6"></i>
+            <span class="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-white text-red-500 text-xs font-bold px-2 py-1 rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition shadow-sm">生成年度海报</span>
+        </button>
+
+        <!-- 底部相册入口 -->
+        <div id="galleryDock" class="fixed bottom-28 right-8 transition-all duration-300 hover:scale-110 cursor-pointer z-40 group">
+             <div class="relative pointer-events-none">
+                <div class="absolute inset-0 bg-stone-100 rotate-6 rounded-lg shadow-md translate-x-2 translate-y-2 border border-stone-300"></div>
+                <div class="absolute inset-0 bg-stone-100 -rotate-3 rounded-lg shadow-md -translate-x-1 translate-y-1 border border-stone-300"></div>
+                <div class="relative w-28 h-28 bg-stone-100 rounded-lg shadow-2xl flex flex-col items-center justify-center border-4 border-stone-300 transition-colors overflow-hidden" id="galleryCover">
+                     <i data-lucide="image" class="text-stone-300 w-10 h-10 mb-1"></i>
+                     <div class="absolute bottom-0 w-full bg-white/90 backdrop-blur-sm text-center py-1 text-xs font-bold text-stone-600 border-t border-stone-200">
+                        <span id="photoCountBadge">0</span> 张照片
+                     </div>
+                </div>
+                <div class="absolute -top-10 left-1/2 -translate-x-1/2 w-max bg-stone-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">查看相册</div>
+             </div>
+        </div>
+
+        <!-- 底部相纸选择栏 (Dock) -->
+        <div class="fixed bottom-0 left-0 right-0 z-[60] flex justify-center pb-6 pt-12 pointer-events-none bg-gradient-to-t from-stone-200/90 via-stone-200/50 to-transparent">
+            <div class="pointer-events-auto bg-white/70 backdrop-blur-md px-2 py-2 rounded-2xl shadow-lg border border-white/50 flex gap-2 overflow-x-auto max-w-[90vw] no-scrollbar snap-x items-center" id="framesDock">
+                <!-- 动态生成相纸按钮 -->
+            </div>
+        </div>
+    </main>
+
+    <!-- 照片墙视图 (Gallery View) -->
+    <section id="galleryView" class="hidden min-h-screen p-8 pt-24 bg-stone-800 overflow-y-auto custom-scrollbar relative z-10">
+        <div class="max-w-6xl mx-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-white text-xl font-bold flex items-center gap-2">
+                    <i data-lucide="image" class="text-amber-400 w-6 h-6"></i> 我的影集 (<span id="galleryCount">0</span>)
+                </h2>
+                <button id="btnGenerateGalleryPoster" class="hidden bg-gradient-to-r from-amber-400 to-orange-500 text-white px-4 py-2 rounded-full shadow-lg hover:shadow-orange-500/20 transition flex items-center gap-2 font-bold text-sm">
+                    <i data-lucide="layout-grid" class="w-4 h-4"></i> 生成影集海报
+                </button>
+            </div>
+            
+            <div id="galleryGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">
+                <!-- 动态生成照片列表 -->
+            </div>
+            
+            <div id="galleryEmptyState" class="flex flex-col items-center justify-center h-96 text-stone-400">
+                <i data-lucide="aperture" class="w-16 h-16 mb-4 opacity-50"></i>
+                <p class="text-xl">相册是空的，快去拍几张！</p>
+                <button onclick="switchView('camera')" class="mt-6 text-amber-400 hover:text-amber-300 underline">返回拍摄</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- 解锁弹窗 (Slide Up) -->
+    <div id="unlockModal" class="fixed bottom-0 left-0 right-0 z-[100] transform translate-y-[120%] transition-transform duration-500 cubic-bezier(0.16, 1, 0.3, 1) flex justify-center pointer-events-none">
+        <div class="bg-white/95 backdrop-blur-xl w-full max-w-md mx-4 mb-6 rounded-3xl shadow-2xl border border-white/50 p-6 pointer-events-auto relative overflow-hidden">
+            <!-- 弹窗内容动态注入 -->
+            <div class="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-yellow-100/50 to-transparent pointer-events-none"></div>
+            
+            <!-- 分享中状态 -->
+            <div id="modalSharingState" class="hidden relative z-10 flex flex-col items-center text-center py-8">
+                 <div class="w-16 h-16 border-4 border-stone-100 border-t-amber-500 rounded-full animate-spin mb-6"></div>
+                 <h3 class="text-xl font-bold text-stone-800 flex items-center gap-2">
+                     <i data-lucide="check-circle-2" class="text-green-500 w-6 h-6"></i> 文案已复制
+                 </h3>
+                 <div class="bg-stone-50 p-4 rounded-xl mt-4 w-full text-left border border-stone-200">
+                     <p class="text-stone-500 text-sm mb-2 flex items-center gap-2"><span class="bg-stone-200 text-stone-600 px-2 py-0.5 rounded text-xs font-bold">Step 1</span> 打开微信/QQ/抖音</p>
+                     <p class="text-stone-500 text-sm mb-2 flex items-center gap-2"><span class="bg-stone-200 text-stone-600 px-2 py-0.5 rounded text-xs font-bold">Step 2</span> 粘贴并发送给好友</p>
+                     <p class="text-stone-800 text-sm font-bold flex items-center gap-2"><span class="bg-amber-100 text-amber-600 px-2 py-0.5 rounded text-xs font-bold">Step 3</span> 返回此页面，自动解锁！</p>
+                 </div>
+                 <button id="btnRetryShare" class="mt-6 text-stone-400 text-sm underline">重新选择分享方式</button>
+            </div>
+
+            <!-- 正常引导状态 -->
+            <div id="modalNormalState" class="relative z-10 flex flex-col items-center text-center">
+                <div class="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mb-4 text-yellow-600 animate-bounce">
+                    <i data-lucide="gift" class="w-8 h-8"></i>
+                </div>
+                <h3 id="modalTitle" class="text-xl font-bold text-stone-800 mb-2">解锁新相纸</h3>
+                <p id="modalDesc" class="text-sm text-stone-500 mb-6 px-4">只需分享给 1 位好友，即可永久免费解锁！</p>
+                
+                <div id="modalPreview" class="mb-6 scale-75 origin-center shadow-lg rounded-sm overflow-hidden">
+                    <!-- 预览内容 -->
+                </div>
+
+                <div class="grid grid-cols-4 gap-4 w-full mb-4">
+                    <button class="share-btn flex flex-col items-center gap-2 group" data-platform="wechat"><div class="w-12 h-12 bg-green-100 text-green-600 rounded-full flex items-center justify-center group-hover:bg-green-500 group-hover:text-white transition-colors shadow-sm"><i data-lucide="message-circle" class="w-5 h-5"></i></div><span class="text-xs text-stone-500">微信</span></button>
+                    <button class="share-btn flex flex-col items-center gap-2 group" data-platform="qq"><div class="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-colors shadow-sm"><i data-lucide="message-square" class="w-5 h-5"></i></div><span class="text-xs text-stone-500">QQ</span></button>
+                    <button class="share-btn flex flex-col items-center gap-2 group" data-platform="douyin"><div class="w-12 h-12 bg-stone-100 text-stone-800 rounded-full flex items-center justify-center group-hover:bg-stone-800 group-hover:text-white transition-colors shadow-sm"><i data-lucide="music" class="w-5 h-5"></i></div><span class="text-xs text-stone-500">抖音</span></button>
+                    <button class="share-btn flex flex-col items-center gap-2 group" data-platform="link"><div class="w-12 h-12 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center group-hover:bg-orange-500 group-hover:text-white transition-colors shadow-sm"><i data-lucide="link" class="w-5 h-5"></i></div><span class="text-xs text-stone-500">复制</span></button>
+                </div>
+                <button id="btnCloseModal" class="text-stone-400 text-sm hover:text-stone-600 underline">暂不解锁，先保存照片</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- JS Logic -->
+    <script>
+        // --- 数据配置 ---
+        const FRAMES = [
+            { id: 'classic', name: '经典白', type: 'solid', color: '#ffffff', textColor: '#57534e', unlocked: true },
+            { id: 'cream', name: '复古杏', type: 'solid', color: '#fef3c7', textColor: '#78350f', unlocked: true },
+            { id: 'pink', name: '樱花粉', type: 'solid', color: '#fce7f3', textColor: '#831843', unlocked: false },
+            { id: 'dark', name: '暗夜黑', type: 'solid', color: '#1c1917', textColor: '#e7e5e4', unlocked: false },
+            { id: 'blue', name: '雾霾蓝', type: 'solid', color: '#e0f2fe', textColor: '#0c4a6e', unlocked: false },
+            { id: 'gold', name: '流光金', type: 'gradient', color: ['#fef9c3', '#d97706'], textColor: '#451a03', unlocked: false },
+            { id: 'newyear', name: '新年红', type: 'gradient', color: ['#b91c1c', '#dc2626'], textColor: '#fecaca', unlocked: false, special: true },
+        ];
+
+        const LIGHT_PRESETS = [
+            { name: '自然', color: '#ffffff' },
+            { name: '落日', color: '#FF4500' },
+            { name: '甜粉', color: '#FF69B4' },
+            { name: '极光', color: '#00FFFF' },
+            { name: '霓虹', color: '#D500F9' },
+        ];
+
+        // --- 全局状态 ---
+        let state = {
+            photos: [],
+            currentFrameId: 'classic',
+            unlockedFrameIds: ['classic', 'cream'],
+            beauty: { smooth: 0, whiten: 0, sharp: 0, thinFace: 0, bigEye: 0 },
+            fillLight: { color: '#ffffff', intensity: 0 },
+            isDeveloping: false,
+            photoCount: 0,
+            activeDragId: null,
+            targetUnlockFrame: null,
+            isSharing: false,
+            didLeave: false,
+            posterImage: null
+        };
+
+        let stream = null;
+        let dragOffset = { x: 0, y: 0 };
+        const videoElement = document.getElementById('videoElement');
+        
+        // --- 初始化 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            initCamera();
+            renderFramesDock();
+            initLightPanel();
+            bindEvents();
+        });
+
+        // --- 相机逻辑 ---
+        async function initCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: { ideal: 4096 }, height: { ideal: 4096 } }
+                });
+                videoElement.srcObject = stream;
+            } catch (err) {
+                document.getElementById('cameraError').innerText = "无法访问摄像头或设备被占用";
+                document.getElementById('cameraError').classList.remove('hidden');
+                console.error(err);
+            }
+        }
+
+        function getBeautyFilterString() {
+            let blur = state.beauty.smooth * 0.2;
+            let brightness = 100 + (state.beauty.smooth * 6) + (state.beauty.whiten * 8);
+            let contrast = 100 - (state.beauty.smooth * 4) + (state.beauty.sharp * 12) + (state.beauty.bigEye * 10);
+            let saturate = 100 - (state.beauty.whiten * 5) + (state.beauty.sharp * 8) + (state.beauty.bigEye * 5);
+            return `blur(${blur}px) brightness(${brightness}%) contrast(${contrast}%) saturate(${saturate}%) sepia(5%)`;
+        }
+
+        function updateVideoFilter() {
+            // 预览时同时应用美颜和瘦脸变换
+            const filterStr = getBeautyFilterString();
+            const scaleY = 1 + (state.beauty.thinFace * 0.03);
+            videoElement.style.filter = filterStr;
+            videoElement.style.transform = `scale(-1, ${scaleY})`; // 保持镜像并纵向拉伸
+            videoElement.style.transformOrigin = 'center center';
+        }
+
+        function updateFillLight() {
+            const layer = document.getElementById('fillLightLayer');
+            const glow = document.getElementById('fillLightGlow');
+            const bodyRef = document.getElementById('bodyReflection');
+            const ringLight = document.getElementById('ringLight');
+
+            layer.style.backgroundColor = state.fillLight.color;
+            layer.style.opacity = state.fillLight.intensity;
+
+            if (state.fillLight.intensity > 0) {
+                glow.style.boxShadow = `inset 0 0 ${state.fillLight.intensity * 150}px ${state.fillLight.intensity * 40}px ${state.fillLight.color}`;
+                
+                bodyRef.style.backgroundColor = state.fillLight.color;
+                bodyRef.style.opacity = state.fillLight.intensity * 0.4;
+                
+                ringLight.style.boxShadow = `inset 0 0 ${state.fillLight.intensity * 30}px ${state.fillLight.color}, 0 0 ${state.fillLight.intensity * 20}px ${state.fillLight.color}`;
+                ringLight.style.borderColor = state.fillLight.color;
+                ringLight.style.opacity = 0.8;
+            } else {
+                glow.style.boxShadow = 'none';
+                bodyRef.style.opacity = 0;
+                ringLight.style.opacity = 0;
+            }
+        }
+
+        // --- 拍照核心 ---
+        function takePhoto() {
+            if (state.isDeveloping) return;
+            state.isDeveloping = true;
+
+            // Flash effect
+            const flash = document.getElementById('flashOverlay');
+            flash.classList.remove('opacity-0');
+            setTimeout(() => flash.classList.add('opacity-0'), 200);
+
+            const canvas = document.getElementById('photoCanvas');
+            const ctx = canvas.getContext('2d');
+            const size = Math.min(videoElement.videoWidth, videoElement.videoHeight);
+            canvas.width = size;
+            canvas.height = size;
+            
+            const startX = (videoElement.videoWidth - size) / 2;
+            const startY = (videoElement.videoHeight - size) / 2;
+
+            ctx.save();
+            // 应用瘦脸变换
+            const stretch = 1 + (state.beauty.thinFace * 0.03);
+            const drawHeight = size * stretch;
+            const drawY = (size - drawHeight) / 2;
+
+            ctx.translate(size, 0);
+            ctx.scale(-1, 1);
+            ctx.filter = getBeautyFilterString();
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(videoElement, startX, startY, size, size, 0, drawY, size, drawHeight);
+            ctx.filter = 'none';
+            ctx.restore();
+
+            const photoData = canvas.toDataURL('image/png', 1.0);
+            
+            // 显影动画
+            const devContainer = document.getElementById('developingPhotoContainer');
+            const devImg = document.getElementById('devPhotoImg');
+            const devAnim = document.getElementById('devPhotoAnim');
+            const devFrame = document.getElementById('devPhotoFrame');
+
+            // 应用当前边框样式到显影相纸
+            const currentFrame = FRAMES.find(f => f.id === state.currentFrameId);
+            if(currentFrame.type === 'gradient') {
+                devFrame.style.background = `linear-gradient(135deg, ${currentFrame.color[0]}, ${currentFrame.color[1]})`;
+            } else {
+                devFrame.style.backgroundColor = currentFrame.color;
+            }
+
+            devImg.src = photoData;
+            devContainer.classList.remove('translate-y-10', 'opacity-0');
+            devContainer.classList.add('-translate-y-[85%]'); // 弹出
+            devAnim.classList.add('animate-develop');
+
+            state.photoCount++;
+
+            // 1.8秒后完成显影，生成散落照片
+            setTimeout(() => {
+                // 重置显影动画
+                devContainer.classList.add('translate-y-10', 'opacity-0');
+                devContainer.classList.remove('-translate-y-[85%]');
+                devAnim.classList.remove('animate-develop');
+                state.isDeveloping = false;
+
+                // 计算落点
+                const winW = window.innerWidth;
+                const winH = window.innerHeight;
+                let x, y;
+                const photoW = 192; // w-48
+                const centerX = winW / 2;
+
+                if (winW > 768) {
+                    const isRight = Math.random() > 0.5;
+                    if (isRight) x = centerX + 220 + Math.random() * (winW/2 - 220 - photoW);
+                    else x = 40 + Math.random() * (centerX - 220 - photoW);
+                    y = 80 + Math.random() * (winH - 400);
+                } else {
+                    x = 20 + Math.random() * (winW - 40 - photoW);
+                    y = (winH / 2) + 180 + Math.random() * 100;
+                }
+                
+                // 边界修正
+                if (x < 10) x = 10;
+                if (x + photoW > winW) x = winW - photoW - 10;
+                if (y + 240 > winH) y = winH - 250;
+
+                const newPhoto = {
+                    id: Date.now(),
+                    url: photoData,
+                    date: new Date().toLocaleString(),
+                    x: x,
+                    y: y,
+                    rotation: (Math.random() * 30) - 15,
+                    archived: false,
+                    frameId: state.currentFrameId
+                };
+
+                state.photos.push(newPhoto);
+                renderLoosePhotos();
+                updateGalleryButton();
+                checkNewYearButton();
+
+            }, 1800);
+        }
+
+        // --- 渲染散落照片 ---
+        function renderLoosePhotos() {
+            const container = document.getElementById('loosePhotosContainer');
+            container.innerHTML = '';
+            
+            state.photos.filter(p => !p.archived).forEach(photo => {
+                const el = document.createElement('div');
+                el.className = `fixed z-50 cursor-grab w-48 touch-none select-none transition-transform duration-300 ease-out`;
+                el.style.left = `${photo.x}px`;
+                el.style.top = `${photo.y}px`;
+                el.style.zIndex = state.activeDragId === photo.id ? 100 : 50;
+                // 如果正在拖拽，移除 transition 以跟手
+                if (state.activeDragId === photo.id) {
+                    el.style.transition = 'none';
+                    el.style.transform = `rotate(${photo.rotation}deg) scale(1.1)`;
+                } else {
+                    el.style.transform = `rotate(${photo.rotation}deg)`;
+                }
+
+                // 边框样式
+                const frame = FRAMES.find(f => f.id === photo.frameId);
+                const bgStyle = frame.type === 'gradient' ? `background: linear-gradient(135deg, ${frame.color[0]}, ${frame.color[1]})` : `background-color: ${frame.color}`;
+
+                el.innerHTML = `
+                    <div class="relative shadow-xl hover:scale-105 transition-transform duration-300 group">
+                        <!-- 按钮组 -->
+                        <button onclick="archiveOne('${photo.id}')" class="absolute -top-3 -left-3 bg-white text-stone-400 p-2 rounded-full shadow-md hover:bg-emerald-500 hover:text-white transition z-50 flex items-center justify-center pointer-events-auto"><i data-lucide="archive" class="w-4 h-4"></i></button>
+                        <button onclick="deleteOne('${photo.id}')" class="absolute -top-3 -right-3 bg-white text-stone-400 p-2 rounded-full shadow-md hover:bg-red-500 hover:text-white transition z-50 flex items-center justify-center pointer-events-auto"><i data-lucide="x" class="w-4 h-4"></i></button>
+                        
+                        <!-- 相纸主体 -->
+                        <div class="p-3 pb-8 shadow-sm border border-black/5" style="${bgStyle}">
+                            <div class="w-full h-56 bg-stone-900 overflow-hidden relative pointer-events-none">
+                                <img src="${photo.url}" class="w-full h-full object-cover filter contrast-105 sepia-[0.1]">
+                                <div class="absolute inset-0 opacity-5 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
+                            </div>
+                            <div class="mt-4 font-handwriting text-center text-sm pointer-events-none" style="color: ${frame.textColor}">
+                                ${photo.date}
+                            </div>
+                        </div>
+
+                        <!-- 下载按钮 -->
+                        <button onclick="downloadOne('${photo.id}')" class="absolute -bottom-3 -right-3 bg-white text-stone-400 p-2 rounded-full shadow-md hover:bg-blue-500 hover:text-white transition z-50 flex items-center justify-center pointer-events-auto"><i data-lucide="download" class="w-4 h-4"></i></button>
+                    </div>
+                `;
+                
+                // 绑定拖拽事件
+                el.onpointerdown = (e) => handlePointerDown(e, photo.id);
+                // 绑定双击旋转
+                el.ondblclick = (e) => { e.stopPropagation(); rotatePhoto(photo.id, 90); };
+                // 绑定滚轮旋转
+                el.onwheel = (e) => { e.stopPropagation(); rotatePhoto(photo.id, e.deltaY > 0 ? 5 : -5); };
+
+                container.appendChild(el);
+            });
+            lucide.createIcons();
+        }
+
+        // --- 交互逻辑 ---
+        function handlePointerDown(e, id) {
+            if (e.target.closest('button')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            state.activeDragId = id;
+            
+            // 提升层级：把当前照片移到数组末尾
+            const others = state.photos.filter(p => p.id !== id);
+            const current = state.photos.find(p => p.id === id);
+            state.photos = [...others, current];
+            
+            // 记录偏移
+            const el = e.currentTarget;
+            dragOffset.x = e.clientX - parseInt(el.style.left);
+            dragOffset.y = e.clientY - parseInt(el.style.top);
+            
+            renderLoosePhotos(); // 重新渲染以更新层级和样式
+            try { el.setPointerCapture(e.pointerId); } catch(err) {}
+        }
+
+        function handlePointerMove(e) {
+            if (!state.activeDragId) return;
+            e.preventDefault();
+            const newX = e.clientX - dragOffset.x;
+            const newY = e.clientY - dragOffset.y;
+            
+            // 更新位置数据
+            const p = state.photos.find(p => p.id === state.activeDragId);
+            if(p) { p.x = newX; p.y = newY; }
+            
+            // 直接操作DOM以提高性能
+            // renderLoosePhotos 可能会有点慢，这里只在move时更新style
+            renderLoosePhotos(); // 还是全量渲染简单，React模式下是这么做的
+
+            // 检测相册吸附
+            const dock = document.getElementById('galleryDock');
+            const rect = dock.getBoundingClientRect();
+            if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                 document.getElementById('galleryCover').classList.add('border-amber-400', 'bg-amber-50');
+            } else {
+                 document.getElementById('galleryCover').classList.remove('border-amber-400', 'bg-amber-50');
+            }
+        }
+
+        function handlePointerUp(e) {
+            if (!state.activeDragId) return;
+            const id = state.activeDragId;
+            state.activeDragId = null;
+
+            const dock = document.getElementById('galleryDock');
+            const rect = dock.getBoundingClientRect();
+            if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                // 归档
+                archiveOne(id);
+            }
+            
+            document.getElementById('galleryCover').classList.remove('border-amber-400', 'bg-amber-50');
+            renderLoosePhotos();
+        }
+
+        // --- 功能函数 ---
+        function archiveOne(id) {
+            const p = state.photos.find(p => p.id == id);
+            if(p) p.archived = true;
+            renderLoosePhotos();
+            updateGalleryButton();
+        }
+
+        function deleteOne(id) {
+            state.photos = state.photos.filter(p => p.id != id);
+            renderLoosePhotos();
+        }
+
+        function rotatePhoto(id, deg) {
+            const p = state.photos.find(p => p.id == id);
+            if(p) p.rotation += deg;
+            renderLoosePhotos();
+        }
+
+        // --- 画廊与海报 ---
+        function updateGalleryButton() {
+            const archived = state.photos.filter(p => p.archived);
+            document.getElementById('photoCountBadge').innerText = archived.length;
+            document.getElementById('galleryCount').innerText = archived.length;
+        }
+
+        function checkNewYearButton() {
+             const hasNewYear = state.unlockedFrameIds.includes('newyear');
+             const btn = document.getElementById('unlockNewYearBtn');
+             if (state.photos.length > 0 && !hasNewYear) {
+                 btn.classList.remove('hidden');
+             } else {
+                 btn.classList.add('hidden');
+             }
+        }
+
+        function switchView(viewName) {
+            const cameraView = document.getElementById('mainView');
+            const galleryView = document.getElementById('galleryView');
+            const btnLight = document.getElementById('btnLightStudio');
+            const btnBack = document.getElementById('btnBackToCamera');
+            const lightPanel = document.getElementById('lightPanel');
+            const framesDock = document.querySelector('.fixed.bottom-0');
+
+            if (viewName === 'gallery') {
+                cameraView.classList.add('hidden');
+                galleryView.classList.remove('hidden');
+                btnLight.classList.add('hidden');
+                btnBack.classList.remove('hidden');
+                lightPanel.classList.add('hidden');
+                framesDock.classList.add('hidden');
+                renderGalleryGrid();
+            } else {
+                cameraView.classList.remove('hidden');
+                galleryView.classList.add('hidden');
+                btnLight.classList.remove('hidden');
+                btnBack.classList.add('hidden');
+                framesDock.classList.remove('hidden');
+                state.showLightPanel = false; // 重置
+            }
+        }
+
+        function renderGalleryGrid() {
+            const grid = document.getElementById('galleryGrid');
+            grid.innerHTML = '';
+            const archived = state.photos.filter(p => p.archived);
+            
+            const btnGen = document.getElementById('btnGenerateGalleryPoster');
+            if (archived.length > 0) btnGen.classList.remove('hidden');
+            else btnGen.classList.add('hidden');
+            
+            if (archived.length === 0) {
+                document.getElementById('galleryEmptyState').classList.remove('hidden');
+                grid.classList.add('hidden');
+                return;
+            }
+            
+            document.getElementById('galleryEmptyState').classList.add('hidden');
+            grid.classList.remove('hidden');
+
+            archived.forEach((photo, idx) => {
+                const frame = FRAMES.find(f => f.id === photo.frameId);
+                const bgStyle = frame.type === 'gradient' ? `background: linear-gradient(135deg, ${frame.color[0]}, ${frame.color[1]})` : `background-color: ${frame.color}`;
+                
+                const div = document.createElement('div');
+                div.className = 'group relative';
+                div.innerHTML = `
+                   <div class="p-4 pb-12 shadow-lg transform transition-all duration-300 hover:scale-105 hover:z-10 hover:shadow-2xl rotate-0 hover:rotate-0"
+                        style="${bgStyle}; transform: rotate(${idx % 2 === 0 ? '-2deg' : '2deg'})">
+                      <div class="w-full aspect-square bg-stone-100 overflow-hidden relative group-hover:cursor-pointer">
+                         <img src="${photo.url}" class="w-full h-full object-cover filter contrast-105 sepia-[0.1]">
+                         <div class="absolute inset-0 opacity-5 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
+                      </div>
+                      <div class="mt-4 flex justify-between items-end border-b border-black/10 pb-2">
+                         <span class="font-handwriting text-sm" style="color: ${frame.textColor}">${photo.date}</span>
+                      </div>
+                   </div>
+                   <div class="absolute -top-2 -right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onclick="downloadOne('${photo.id}')" class="p-2 bg-blue-500 text-white rounded-full shadow hover:bg-blue-600"><i data-lucide="download" class="w-4 h-4"></i></button>
+                      <button onclick="deleteOne('${photo.id}')" class="p-2 bg-red-500 text-white rounded-full shadow hover:bg-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                   </div>
+                `;
+                grid.appendChild(div);
+            });
+            lucide.createIcons();
+        }
+
+        // --- Canvas 绘图与海报 ---
+        function generatePoster(targetFrameId) {
+            const targetFrame = FRAMES.find(f => f.id === targetFrameId);
+            state.targetUnlockFrame = targetFrame;
+            state.posterImage = null; // reset
+
+            const canvas = document.getElementById('posterCanvas');
+            const ctx = canvas.getContext('2d');
+            const width = 1080;
+            const height = 1440;
+            canvas.width = width;
+            canvas.height = height;
+
+            // 背景
+            const gradient = ctx.createLinearGradient(0, 0, width, height);
+            gradient.addColorStop(0, '#991b1b');
+            gradient.addColorStop(1, '#450a0a');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, width, height);
+
+            // 纹理
+            ctx.save();
+            for(let i=0; i<15000; i++) {
+                ctx.fillStyle = `rgba(255,215,0,${Math.random() * 0.08})`; 
+                ctx.fillRect(Math.random() * width, Math.random() * height, 2, 2);
+            }
+            ctx.restore();
+
+            // 灯笼光影
+            // ... (复用之前的光影逻辑)
+            ctx.save();
+            const lanternGrd1 = ctx.createRadialGradient(200, 100, 0, 200, 100, 300);
+            lanternGrd1.addColorStop(0, 'rgba(252, 211, 77, 0.25)'); 
+            lanternGrd1.addColorStop(1, 'rgba(252, 211, 77, 0)');
+            ctx.fillStyle = lanternGrd1;
+            ctx.beginPath(); ctx.arc(200, 100, 300, 0, Math.PI*2); ctx.fill();
+            // ... 线条 ...
+            ctx.strokeStyle = 'rgba(252, 211, 77, 0.3)'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(200, 0); ctx.lineTo(200, 150); ctx.stroke();
+            ctx.restore();
+
+            // 文案
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#fef3c7'; 
+            ctx.font = 'bold 90px sans-serif'; 
+            ctx.fillText('2026 新春大吉', width/2, 200);
+            ctx.font = '32px sans-serif';
+            ctx.fillStyle = '#fbbf24'; 
+            ctx.fillText('丙午马年 · 限定珍藏', width/2, 270);
+
+            // 绘制照片
+            let photosToDraw = [...state.photos].reverse().slice(0, 3);
+            // 确保有照片，否则造假(使用默认图)? 这里简单处理：至少一张
+            if(photosToDraw.length === 0) { alert("没有照片可生成"); return; }
+            
+            let loaded = 0;
+            
+            const drawPolaroid = (img, x, y, rot, date) => {
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(rot * Math.PI / 180);
+                
+                // 边框 (使用新年的红色)
+                const pW = 320; const pH = 400;
+                const grd = ctx.createLinearGradient(-pW/2, -pH/2, pW/2, pH/2);
+                grd.addColorStop(0, '#b91c1c'); grd.addColorStop(1, '#ef4444'); 
+                ctx.fillStyle = grd;
+                ctx.beginPath(); ctx.roundRect(-pW/2, -pH/2, pW, pH, 6); ctx.fill();
+                
+                // 照片内容
+                ctx.fillStyle = '#262626';
+                const imgSize = 280;
+                ctx.fillRect(-imgSize/2, -pH/2 + 20, imgSize, imgSize);
+                ctx.drawImage(img, -imgSize/2, -pH/2 + 20, imgSize, imgSize);
+                
+                // 文字
+                ctx.fillStyle = '#fef3c7'; 
+                ctx.font = '24px "Caveat", cursive, sans-serif'; 
+                ctx.textAlign = 'center';
+                ctx.fillText(date, 0, pH/2 - 35);
+                ctx.restore();
+            };
+
+            photosToDraw.forEach((p, i) => {
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                img.src = p.url;
+                img.onload = () => {
+                    let x, y, rot;
+                    if (i === 0) { x = width/2; y = height/2 + 50; rot = -2; }
+                    else if (i === 1) { x = width/2 - 140; y = height/2 - 180; rot = -12; }
+                    else { x = width/2 + 140; y = height/2 - 120; rot = 8; }
+                    
+                    drawPolaroid(img, x, y, rot, p.date);
+                    loaded++;
+                    if(loaded === photosToDraw.length) {
+                         // 完成
+                         state.posterImage = canvas.toDataURL('image/png');
+                         renderModalContent('newyear_poster');
+                         showModal(true);
+                    }
+                };
+            });
+        }
+
+        // --- 模态框逻辑 ---
+        function showModal(show) {
+            const modal = document.getElementById('unlockModal');
+            if (show) modal.classList.remove('translate-y-[120%]');
+            else {
+                modal.classList.add('translate-y-[120%]');
+                state.isSharing = false;
+                state.didLeave = false;
+            }
+        }
+
+        function renderModalContent(type) {
+             const sharingDiv = document.getElementById('modalSharingState');
+             const normalDiv = document.getElementById('modalNormalState');
+             const title = document.getElementById('modalTitle');
+             const desc = document.getElementById('modalDesc');
+             const preview = document.getElementById('modalPreview');
+             
+             sharingDiv.classList.add('hidden');
+             normalDiv.classList.remove('hidden');
+
+             if (type === 'sharing') {
+                 sharingDiv.classList.remove('hidden');
+                 normalDiv.classList.add('hidden');
+                 return;
+             }
+
+             if (type === 'newyear_poster') {
+                 title.innerText = "生成我的年度影集";
+                 desc.innerText = "分享这份独特的复古记忆，解锁全部限定相纸！";
+                 preview.innerHTML = `<div class="w-48 h-auto border-4 border-white max-h-[300px] overflow-hidden"><img src="${state.posterImage}" class="w-full h-full object-cover"></div>`;
+             } else {
+                 // 普通相纸解锁
+                 const f = state.targetUnlockFrame;
+                 title.innerText = `解锁「${f.name}」相纸`;
+                 desc.innerText = "只需分享给 1 位好友，即可永久免费解锁！";
+                 const bg = f.type === 'gradient' ? `background: linear-gradient(135deg, ${f.color[0]}, ${f.color[1]})` : `background-color: ${f.color}`;
+                 preview.innerHTML = `
+                    <div class="w-32 h-40 p-2 pb-6 flex flex-col items-center justify-center shadow-lg" style="${bg}">
+                        <div class="w-full h-full bg-stone-200 flex items-center justify-center opacity-50"><i data-lucide="image" class="text-stone-400 w-8 h-8"></i></div>
+                    </div>`;
+                 lucide.createIcons();
+             }
+        }
+
+        // --- 事件绑定 ---
+        function bindEvents() {
+            // 顶部按钮
+            document.getElementById('btnLightStudio').onclick = () => {
+                document.getElementById('lightPanel').classList.toggle('hidden');
+                // state.showLightPanel logic handled by class toggle
+            };
+            document.getElementById('btnBackToCamera').onclick = () => switchView('camera');
+            document.getElementById('galleryDock').onclick = () => switchView('gallery');
+            document.getElementById('shutterBtn').onclick = takePhoto;
+            
+            // 拖拽事件监听
+            window.addEventListener('pointermove', handlePointerMove);
+            window.addEventListener('pointerup', handlePointerUp);
+
+            // 解锁与分享
+            document.getElementById('unlockNewYearBtn').onclick = () => {
+                const ny = FRAMES.find(f => f.id === 'newyear');
+                generateCollectionPoster(ny);
+            };
+            document.getElementById('btnGenerateGalleryPoster').onclick = () => {
+                const ny = FRAMES.find(f => f.id === 'newyear');
+                generateCollectionPoster(ny);
+            };
+            document.getElementById('btnCloseModal').onclick = () => showModal(false);
+            document.getElementById('btnRetryShare').onclick = () => renderModalContent(state.posterImage ? 'newyear_poster' : 'normal');
+
+            document.querySelectorAll('.share-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const platform = btn.dataset.platform;
+                    handleShareToUnlock(platform);
+                };
+            });
+
+            // 美颜滑块
+            ['Smooth', 'Whiten', 'Sharp', 'Intensity'].forEach(key => {
+                const input = document.getElementById('input' + key);
+                input.oninput = (e) => {
+                    const val = parseFloat(e.target.value);
+                    if (key === 'Intensity') {
+                        state.fillLight.intensity = val;
+                        document.getElementById('val' + key).innerText = Math.round(val * 100) + '%';
+                        updateFillLight();
+                    } else {
+                        // 映射 mapping
+                        let mapKey = key === 'Smooth' ? 'smooth' : (key === 'Whiten' ? 'whiten' : 'sharp'); 
+                        state.beauty[mapKey] = val;
+                        document.getElementById('val' + key).innerText = Math.round(val * 10);
+                        updateVideoFilter();
+                    }
+                };
+            });
+        }
+
+        // 初始化相纸栏
+        function renderFramesDock() {
+            const dock = document.getElementById('framesDock');
+            dock.innerHTML = '';
+            FRAMES.forEach(frame => {
+                const isUnlocked = state.unlockedFrameIds.includes(frame.id);
+                const isSelected = state.currentFrameId === frame.id;
+                
+                const btn = document.createElement('button');
+                btn.className = `relative flex-shrink-0 w-12 h-16 rounded-md border-2 transition-all duration-300 snap-center ${isSelected ? 'border-stone-800 scale-110 shadow-md z-10' : 'border-transparent scale-95 opacity-80 hover:scale-100 hover:opacity-100'}`;
+                
+                if (frame.type === 'gradient') {
+                    btn.style.background = `linear-gradient(135deg, ${frame.color[0]}, ${frame.color[1]})`;
+                } else {
+                    btn.style.backgroundColor = frame.color;
+                }
+
+                let inner = '';
+                if (!isUnlocked) {
+                    inner += `<div class="absolute inset-0 bg-black/20 flex items-center justify-center rounded-sm"><i data-lucide="lock" class="text-white w-4 h-4 drop-shadow-md"></i></div>`;
+                }
+                if (isSelected && isUnlocked) {
+                    inner += `<div class="absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 bg-stone-800 rounded-full"></div>`;
+                }
+                btn.innerHTML = inner;
+
+                btn.onclick = () => {
+                    if (isUnlocked) {
+                        state.currentFrameId = frame.id;
+                        renderFramesDock(); // re-render to update selected state
+                    } else {
+                        if (frame.id === 'newyear') {
+                             generateCollectionPoster(frame);
+                        } else {
+                            state.targetUnlockFrame = frame;
+                            state.posterImage = null;
+                            renderModalContent('normal');
+                            showModal(true);
+                        }
+                    }
+                };
+                dock.appendChild(btn);
+            });
+            lucide.createIcons();
+        }
+
+        function initLightPanel() {
+            const container = document.getElementById('colorPresets');
+            LIGHT_PRESETS.forEach(p => {
+                const btn = document.createElement('button');
+                btn.className = "w-8 h-8 rounded-full border-2 shadow-sm transition-transform hover:scale-110 relative border-transparent";
+                btn.style.backgroundColor = p.color;
+                btn.onclick = () => {
+                    state.fillLight.color = p.color;
+                    if (state.fillLight.intensity === 0) {
+                        state.fillLight.intensity = 0.5;
+                        document.getElementById('inputIntensity').value = 0.5;
+                        document.getElementById('valIntensity').innerText = '50%';
+                    }
+                    updateFillLight();
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        function downloadOne(id) {
+            const photo = state.photos.find(p => p.id == id);
+            downloadPhoto(photo);
+        }
+
+        // 分享解锁逻辑
+        function handleShareToUnlock(platform) {
+            state.isSharing = true;
+            state.didLeave = false;
+            renderModalContent('sharing');
+            
+            // 复制逻辑
+            const text = "RetroCam 拍立得 - 一键出片！";
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.position = "fixed";
+            textarea.style.opacity = 0;
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+
+            // PC 兜底
+            if (window.innerWidth > 768) {
+                setTimeout(() => {
+                    if (state.isSharing && state.targetUnlockFrame) {
+                        unlockFrame(state.targetUnlockFrame.id);
+                        state.isSharing = false;
+                        showModal(false);
+                    }
+                }, 4000);
+            }
+        }
+
+        function unlockFrame(id) {
+            if (!state.unlockedFrameIds.includes(id)) {
+                state.unlockedFrameIds.push(id);
+                state.currentFrameId = id;
+                renderFramesDock();
+                checkNewYearButton();
+                showModal(false);
+                alert("解锁成功！已应用新相纸");
+            }
+        }
+
+    </script>
+</body>
+</html>
