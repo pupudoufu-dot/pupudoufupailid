@@ -64,19 +64,33 @@
                 <h4 class="text-xs font-bold text-stone-400 uppercase tracking-wider">iPhone 质感美颜</h4>
                 <div>
                     <div class="flex justify-between mb-1">
-                        <label class="text-xs font-bold text-stone-600">改善肤质</label>
+                        <label class="text-xs font-bold text-stone-600">改善肤质 (去细纹)</label>
                         <span class="text-[10px] text-stone-400" id="valSmooth">0</span>
                     </div>
                     <input type="range" id="inputSmooth" min="0" max="3" step="0.5" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
                 </div>
                 <div>
                     <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-stone-600">精致瘦脸</label>
+                        <span class="text-[10px] text-stone-400" id="valThinFace">0</span>
+                    </div>
+                    <input type="range" id="inputThinFace" min="0" max="3" step="0.5" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                </div>
+                 <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-stone-600">灵动大眼 (亮眼)</label>
+                        <span class="text-[10px] text-stone-400" id="valBigEye">0</span>
+                    </div>
+                    <input type="range" id="inputBigEye" min="0" max="3" step="0.5" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                </div>
+                <div>
+                    <div class="flex justify-between mb-1">
                         <label class="text-xs font-bold text-stone-600">美白提亮</label>
                         <span class="text-[10px] text-stone-400" id="valWhiten">0</span>
                     </div>
-                    <input type="range" id="inputWhiten" min="0" max="2" step="0.2" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
+                    <input type="range" id="inputWhiten" min="0" max="3" step="0.5" value="0" class="w-full h-1.5 bg-stone-200 rounded-lg accent-pink-500 cursor-pointer">
                 </div>
-                 <div>
+                <div>
                     <div class="flex justify-between mb-1">
                         <label class="text-xs font-bold text-stone-600">五官立体</label>
                         <span class="text-[10px] text-stone-400" id="valSharp">0</span>
@@ -697,8 +711,8 @@
         }
 
         // --- Canvas 绘图与海报 ---
-        function generatePoster(targetFrameId) {
-            const targetFrame = FRAMES.find(f => f.id === targetFrameId);
+        function generateCollectionPoster(targetFrame) {
+            // 注意：这里参数接收的是 frame 对象本身，不是 ID
             state.targetUnlockFrame = targetFrame;
             state.posterImage = null; // reset
 
@@ -725,7 +739,6 @@
             ctx.restore();
 
             // 灯笼光影
-            // ... (复用之前的光影逻辑)
             ctx.save();
             const lanternGrd1 = ctx.createRadialGradient(200, 100, 0, 200, 100, 300);
             lanternGrd1.addColorStop(0, 'rgba(252, 211, 77, 0.25)'); 
@@ -748,7 +761,6 @@
 
             // 绘制照片
             let photosToDraw = [...state.photos].reverse().slice(0, 3);
-            // 确保有照片，否则造假(使用默认图)? 这里简单处理：至少一张
             if(photosToDraw.length === 0) { alert("没有照片可生成"); return; }
             
             let loaded = 0;
@@ -792,7 +804,6 @@
                     drawPolaroid(img, x, y, rot, p.date);
                     loaded++;
                     if(loaded === photosToDraw.length) {
-                         // 完成
                          state.posterImage = canvas.toDataURL('image/png');
                          renderModalContent('newyear_poster');
                          showModal(true);
@@ -848,20 +859,16 @@
 
         // --- 事件绑定 ---
         function bindEvents() {
-            // 顶部按钮
             document.getElementById('btnLightStudio').onclick = () => {
                 document.getElementById('lightPanel').classList.toggle('hidden');
-                // state.showLightPanel logic handled by class toggle
             };
             document.getElementById('btnBackToCamera').onclick = () => switchView('camera');
             document.getElementById('galleryDock').onclick = () => switchView('gallery');
             document.getElementById('shutterBtn').onclick = takePhoto;
             
-            // 拖拽事件监听
             window.addEventListener('pointermove', handlePointerMove);
             window.addEventListener('pointerup', handlePointerUp);
 
-            // 解锁与分享
             document.getElementById('unlockNewYearBtn').onclick = () => {
                 const ny = FRAMES.find(f => f.id === 'newyear');
                 generateCollectionPoster(ny);
@@ -881,7 +888,7 @@
             });
 
             // 美颜滑块
-            ['Smooth', 'Whiten', 'Sharp', 'Intensity'].forEach(key => {
+            ['Smooth', 'Whiten', 'Sharp', 'Intensity', 'ThinFace', 'BigEye'].forEach(key => {
                 const input = document.getElementById('input' + key);
                 input.oninput = (e) => {
                     const val = parseFloat(e.target.value);
@@ -891,7 +898,7 @@
                         updateFillLight();
                     } else {
                         // 映射 mapping
-                        let mapKey = key === 'Smooth' ? 'smooth' : (key === 'Whiten' ? 'whiten' : 'sharp'); 
+                        let mapKey = key === 'Smooth' ? 'smooth' : (key === 'Whiten' ? 'whiten' : (key === 'Sharp' ? 'sharp' : (key === 'ThinFace' ? 'thinFace' : 'bigEye'))); 
                         state.beauty[mapKey] = val;
                         document.getElementById('val' + key).innerText = Math.round(val * 10);
                         updateVideoFilter();
@@ -929,7 +936,7 @@
                 btn.onclick = () => {
                     if (isUnlocked) {
                         state.currentFrameId = frame.id;
-                        renderFramesDock(); // re-render to update selected state
+                        renderFramesDock(); 
                     } else {
                         if (frame.id === 'newyear') {
                              generateCollectionPoster(frame);
@@ -976,7 +983,6 @@
             state.didLeave = false;
             renderModalContent('sharing');
             
-            // 复制逻辑
             const text = "RetroCam 拍立得 - 一键出片！";
             const textarea = document.createElement("textarea");
             textarea.value = text;
@@ -988,7 +994,6 @@
             document.execCommand('copy');
             document.body.removeChild(textarea);
 
-            // PC 兜底
             if (window.innerWidth > 768) {
                 setTimeout(() => {
                     if (state.isSharing && state.targetUnlockFrame) {
